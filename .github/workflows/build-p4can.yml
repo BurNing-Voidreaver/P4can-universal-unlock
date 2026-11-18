@@ -101,50 +101,28 @@ jobs:
 
       - name: Merge 32MB fullflash image
         run: |
-          set -o pipefail
-          LOG=$(mktemp)
-          merge() {
-            set -e
-            ESPTOOL="python3 -m esptool"
-            if ! $ESPTOOL version >/dev/null 2>&1; then
-              B=$(find "$HOME/.arduino15/packages/esp32/tools/esptool_py" -name 'esptool.py' -print -quit)
-              test -n "$B" || { echo "no esptool available"; return 1; }
-              ESPTOOL="python3 $B"
-            fi
-            $ESPTOOL version
-            echo "== out/build =="
-            find out/build -maxdepth 1 \( -name '*.bin' -o -name '*.elf' -o -name '*.map' \) | sort
-            BOOT=$(find out -maxdepth 2 -name '*.bootloader.bin' -print -quit)
-            PART=$(find out -maxdepth 2 -name '*.partitions.bin' -print -quit)
-            APP=$(find out -maxdepth 2 -name '*.ino.bin' -print -quit)
-            for f in "$BOOT" "$PART" "$APP"; do
-              echo "found: $f"
-              test -f "$f"
-            done
-            if $ESPTOOL merge-bin --help >/dev/null 2>&1; then CMD=merge-bin; else CMD=merge_bin; fi
-            H=$($ESPTOOL "$CMD" --help 2>&1 || true)
-            PAD=()
-            case "$H" in
-              *--pad-to-size*)     PAD=(--pad-to-size 32MB) ;;
-              *--fill-flash-size*) PAD=(--fill-flash-size 32MB) ;;
-            esac
-            echo "esptool command: $CMD   padding: ${PAD[*]:-none}"
-            set -x
-            $ESPTOOL "$CMD" -o out/fullflash.bin --flash-mode dio --flash-freq 80m --flash-size 32MB "${PAD[@]}" 0x2000 "$BOOT" 0x8000 "$PART" 0x10000 "$APP" \
-              || $ESPTOOL "$CMD" -o out/fullflash.bin --flash-mode dio --flash-freq 80m --flash-size 32MB 0x2000 "$BOOT" 0x8000 "$PART" 0x10000 "$APP"
-            set +x
-            test -s out/fullflash.bin
-            echo "fullflash size: $(stat -c %s out/fullflash.bin)"
-            $ESPTOOL image-info "$APP" || true
-          }
-          if merge 2>&1 | tee "$LOG"; then
-            echo "merge OK"
-          else
-            MSG=$(tail -c 800 "$LOG")
-            MSG=${MSG//$'\n'/|}
-            echo "::error::merge failed: $MSG"
-            exit 1
-          fi
+          set -euo pipefail
+          BOOT=$(find out -maxdepth 2 -name '*.bootloader.bin' -print -quit)
+          PART=$(find out -maxdepth 2 -name '*.partitions.bin' -print -quit)
+          APP=$(find out -maxdepth 2 -name '*.ino.bin' -print -quit)
+          for f in "$BOOT" "$PART" "$APP"; do
+            echo "found: $f ($(stat -c %s "$f") bytes)"
+            test -s "$f"
+          done
+          python3 - "$BOOT" "$PART" "$APP" <<'PY'
+          import sys
+          boot, part, app = sys.argv[1:4]
+          SIZE = 32 * 1024 * 1024
+          img = bytearray(bytes([255]) * SIZE)
+          for path, off in ((boot, 0x2000), (part, 0x8000), (app, 0x10000)):
+              data = open(path, 'rb').read()
+              img[off:off + len(data)] = data
+              print('%-72s -> 0x%08x  %d bytes' % (path, off, len(data)))
+          with open('out/fullflash.bin', 'wb') as fh:
+              fh.write(img)
+          print('fullflash: %d bytes' % SIZE)
+          PY
+          ls -l out/fullflash.bin
 
       - name: Assert artifacts
         run: |
