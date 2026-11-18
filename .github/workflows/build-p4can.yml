@@ -121,7 +121,15 @@ jobs:
             done
             if python3 -m esptool merge-bin --help >/dev/null 2>&1; then CMD=merge-bin; else CMD=merge_bin; fi
             echo "esptool subcommand: $CMD"
-            python3 -m esptool "$CMD" -o out/fullflash.bin --flash-mode dio --flash-freq 80m --flash-size 32MB 0x2000 "$BOOT" 0x8000 "$PART" 0x10000 "$APP"
+            PAD=()
+            H=$(python3 -m esptool "$CMD" --help 2>&1 || true)
+            case "$H" in
+              *--pad-to-size*)    PAD=(--pad-to-size 32MB) ;;
+              *--fill-flash-size*) PAD=(--fill-flash-size 32MB) ;;
+            esac
+            echo "pad flags: ${PAD[*]:-none}"
+            python3 -m esptool "$CMD" -o out/fullflash.bin --flash-mode dio --flash-freq 80m --flash-size 32MB "${PAD[@]}" 0x2000 "$BOOT" 0x8000 "$PART" 0x10000 "$APP"
+            echo "fullflash size: $(stat -c %s out/fullflash.bin) bytes"
             ls -l out/fullflash.bin
             python3 -m esptool image-info "$APP" || true
           }
