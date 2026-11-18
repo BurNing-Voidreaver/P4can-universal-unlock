@@ -88,6 +88,33 @@ jobs:
             --build-path out/build --output-dir out "$SKETCH"
           find out -maxdepth 1 -type f | sort
 
+      - name: Verify embedded dashboard
+        run: |
+          set -euo pipefail
+          APP=$(find out -maxdepth 2 -name '*.ino.bin' -print -quit)
+          python3 - "$APP" "$GITHUB_WORKSPACE/dashboard_source.html" <<'PY'
+          import hashlib
+          import sys
+          import zlib
+
+          app, src = sys.argv[1], sys.argv[2]
+          data = open(app, 'rb').read()
+          magic = bytes([0x1f, 0x8b, 0x08, 0x00, 0x00, 0x00, 0x00, 0x00, 0x02, 0xff])
+          idx = data.find(magic)
+          if idx < 0:
+              print('::error::no gzip stream found in app image')
+              raise SystemExit(1)
+          html = zlib.decompressobj(16 + zlib.MAX_WBITS).decompress(data[idx:])
+          want = open(src, 'rb').read()
+          digest = hashlib.sha256(html).hexdigest()
+          print('embedded html : %d bytes sha256=%s' % (len(html), digest))
+          print('source        : %d bytes sha256=%s' % (len(want), hashlib.sha256(want).hexdigest()))
+          print('match: %s' % (html == want))
+          print('::notice title=embedded-dashboard::%d bytes sha256=%s match=%s' % (len(html), digest, html == want))
+          if html != want:
+              raise SystemExit(1)
+          PY
+
       - name: Check NimBLE -> fixed TinyCrypt ownership
         continue-on-error: true
         run: |
