@@ -70,7 +70,7 @@ jobs:
           rm -rf "$RUNNER_TEMP/sketch"
           mkdir -p "$DEST"
           tar --exclude=.git --exclude=.github -cf - -C "$SRC" . | tar -xf - -C "$DEST"
-          ls "$DEST" | head -n 20
+          ls "$DEST"
           echo "name=$NAME" >> "$GITHUB_OUTPUT"
           echo "dir=$DEST" >> "$GITHUB_OUTPUT"
 
@@ -101,7 +101,7 @@ jobs:
         run: |
           MAP=$(ls out/build/*.ino.map)
           echo "map: $MAP"
-          grep -E 'uECC_shared_secret|EccPoint_mult|uECC_make_key|uECC_valid_public_key' "$MAP" | head -20
+          grep -E 'uECC_shared_secret|EccPoint_mult|uECC_make_key|uECC_valid_public_key' "$MAP" || true
           if grep -E 'uECC_shared_secret' "$MAP" | grep -q 'src/p4_tinycrypt/'; then
             echo "OK: 使用包内修复版 TinyCrypt"
           else
@@ -114,8 +114,10 @@ jobs:
           python3 -m pip install --quiet --user "esptool==5.6.0" \
             || python3 -m pip install --quiet --user --break-system-packages "esptool==5.6.0"
           python3 -m esptool version
-          echo "===== build path ====="; ls -l out/build | head -40
-          echo "===== output dir ====="; ls -l out | head -40
+          echo "===== build path ====="
+          find out/build -maxdepth 1 \( -name '*.bin' -o -name '*.elf' -o -name '*.map' \) | sort
+          echo "===== output dir ====="
+          find out -maxdepth 1 -type f | sort
           # --output-dir 不一定带出 bootloader/partitions，统一用 find 定位
           BOOT=$(find out -maxdepth 2 -name '*.bootloader.bin' -print -quit)
           PART=$(find out -maxdepth 2 -name '*.partitions.bin' -print -quit)
