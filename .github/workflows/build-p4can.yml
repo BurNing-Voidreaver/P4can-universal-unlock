@@ -25,8 +25,9 @@ jobs:
     timeout-minutes: 60
 
     env:
-      # Same configuration the shipped v3.29.3 image was built with (its header records DIO).
-      FQBN: esp32:esp32:esp32p4:ChipVariant=postv3,FlashSize=32M,PartitionScheme=app5M_fat24M_32MB,PSRAM=enabled,USBMode=hwcdc,CDCOnBoot=cdc,FlashMode=dio
+      # FlashMode=qio is what the shipped v3.29.3 image used: the bootloader is the
+      # QIO-capable one (build.boot=qio) even though the image header still says DIO.
+      FQBN: esp32:esp32:esp32p4:ChipVariant=postv3,FlashSize=32M,PartitionScheme=app5M_fat24M_32MB,PSRAM=enabled,USBMode=hwcdc,CDCOnBoot=cdc,FlashMode=qio
 
     steps:
       - name: Checkout
@@ -109,12 +110,19 @@ jobs:
             echo "found: $f ($(stat -c %s "$f") bytes)"
             test -s "$f"
           done
-          python3 - "$BOOT" "$PART" "$APP" <<'PY'
+          BOOTAPP0=$(find "$HOME/.arduino15/packages/esp32/hardware" -name 'boot_app0.bin' -print -quit || true)
+          echo "boot_app0: ${BOOTAPP0:-not found}"
+          python3 - "$BOOT" "$PART" "$APP" "$BOOTAPP0" <<'PY'
+          import os
           import sys
           boot, part, app = sys.argv[1:4]
+          boot_app0 = sys.argv[4] if len(sys.argv) > 4 else ''
           SIZE = 32 * 1024 * 1024
           img = bytearray(bytes([255]) * SIZE)
-          for path, off in ((boot, 0x2000), (part, 0x8000), (app, 0x10000)):
+          items = [(boot, 0x2000), (part, 0x8000), (app, 0x10000)]
+          if boot_app0 and os.path.isfile(boot_app0):
+              items.insert(2, (boot_app0, 0xe000))
+          for path, off in items:
               data = open(path, 'rb').read()
               img[off:off + len(data)] = data
               print('%-72s -> 0x%08x  %d bytes' % (path, off, len(data)))
