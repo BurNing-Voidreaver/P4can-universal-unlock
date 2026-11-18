@@ -85,7 +85,7 @@ jobs:
             --build-property "compiler.c.extra_flags=-I$TC" \
             --build-property "compiler.cpp.extra_flags=-I$TC" \
             --build-path out/build --output-dir out "$SKETCH"
-          ls -l out
+          find out -maxdepth 1 -type f | sort
 
       - name: Check NimBLE -> fixed TinyCrypt ownership
         continue-on-error: true
@@ -104,43 +104,56 @@ jobs:
           set -o pipefail
           LOG=$(mktemp)
           merge() {
-            python3 -m pip --version || true
-            python3 -m pip install --quiet --user "esptool==5.6.0" || true
-            python3 -m pip install --quiet --user --break-system-packages "esptool==5.6.0" || true
-            python3 -m esptool version
+            set -e
+            ESPTOOL="python3 -m esptool"
+            if ! $ESPTOOL version >/dev/null 2>&1; then
+              B=$(find "$HOME/.arduino15/packages/esp32/tools/esptool_py" -name 'esptool.py' -print -quit)
+              test -n "$B" || { echo "no esptool available"; return 1; }
+              ESPTOOL="python3 $B"
+            fi
+            $ESPTOOL version
             echo "== out/build =="
             find out/build -maxdepth 1 \( -name '*.bin' -o -name '*.elf' -o -name '*.map' \) | sort
-            echo "== out =="
-            find out -maxdepth 1 -type f | sort
             BOOT=$(find out -maxdepth 2 -name '*.bootloader.bin' -print -quit)
             PART=$(find out -maxdepth 2 -name '*.partitions.bin' -print -quit)
             APP=$(find out -maxdepth 2 -name '*.ino.bin' -print -quit)
             for f in "$BOOT" "$PART" "$APP"; do
               echo "found: $f"
-              test -f "$f" || return 1
+              test -f "$f"
             done
-            if python3 -m esptool merge-bin --help >/dev/null 2>&1; then CMD=merge-bin; else CMD=merge_bin; fi
-            echo "esptool subcommand: $CMD"
+            if $ESPTOOL merge-bin --help >/dev/null 2>&1; then CMD=merge-bin; else CMD=merge_bin; fi
+            H=$($ESPTOOL "$CMD" --help 2>&1 || true)
             PAD=()
-            H=$(python3 -m esptool "$CMD" --help 2>&1 || true)
             case "$H" in
-              *--pad-to-size*)    PAD=(--pad-to-size 32MB) ;;
+              *--pad-to-size*)     PAD=(--pad-to-size 32MB) ;;
               *--fill-flash-size*) PAD=(--fill-flash-size 32MB) ;;
             esac
-            echo "pad flags: ${PAD[*]:-none}"
-            python3 -m esptool "$CMD" -o out/fullflash.bin --flash-mode dio --flash-freq 80m --flash-size 32MB "${PAD[@]}" 0x2000 "$BOOT" 0x8000 "$PART" 0x10000 "$APP"
-            echo "fullflash size: $(stat -c %s out/fullflash.bin) bytes"
-            ls -l out/fullflash.bin
-            python3 -m esptool image-info "$APP" || true
+            echo "esptool command: $CMD   padding: ${PAD[*]:-none}"
+            set -x
+            $ESPTOOL "$CMD" -o out/fullflash.bin --flash-mode dio --flash-freq 80m --flash-size 32MB "${PAD[@]}" 0x2000 "$BOOT" 0x8000 "$PART" 0x10000 "$APP" \
+              || $ESPTOOL "$CMD" -o out/fullflash.bin --flash-mode dio --flash-freq 80m --flash-size 32MB 0x2000 "$BOOT" 0x8000 "$PART" 0x10000 "$APP"
+            set +x
+            test -s out/fullflash.bin
+            echo "fullflash size: $(stat -c %s out/fullflash.bin)"
+            $ESPTOOL image-info "$APP" || true
           }
           if merge 2>&1 | tee "$LOG"; then
             echo "merge OK"
           else
-            MSG=$(tail -c 700 "$LOG")
+            MSG=$(tail -c 800 "$LOG")
             MSG=${MSG//$'\n'/|}
             echo "::error::merge failed: $MSG"
             exit 1
           fi
+
+      - name: Assert artifacts
+        run: |
+          set -euo pipefail
+          test -s out/fullflash.bin
+          APP=$(find out -maxdepth 2 -name '*.ino.bin' -print -quit)
+          test -s "$APP"
+          echo "app      : $APP  $(stat -c %s "$APP") bytes"
+          echo "fullflash: out/fullflash.bin  $(stat -c %s out/fullflash.bin) bytes"
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
