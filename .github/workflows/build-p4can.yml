@@ -111,18 +111,27 @@ jobs:
       - name: Merge 32MB fullflash image
         run: |
           set -euo pipefail
-          python3 -m venv .venv
-          . .venv/bin/activate
-          pip install --quiet "esptool==5.6.0"
-          NAME='${{ steps.prep.outputs.name }}'
-          python -m esptool merge-bin \
+          python3 -m pip install --quiet --user "esptool==5.6.0" \
+            || python3 -m pip install --quiet --user --break-system-packages "esptool==5.6.0"
+          python3 -m esptool version
+          echo "===== build path ====="; ls -l out/build | head -40
+          echo "===== output dir ====="; ls -l out | head -40
+          # --output-dir 不一定带出 bootloader/partitions，统一用 find 定位
+          BOOT=$(find out -maxdepth 2 -name '*.bootloader.bin' -print -quit)
+          PART=$(find out -maxdepth 2 -name '*.partitions.bin' -print -quit)
+          APP=$(find out -maxdepth 2 -name '*.ino.bin' -print -quit)
+          for f in "$BOOT" "$PART" "$APP"; do test -f "$f" || { echo "missing: $f"; exit 1; }; done
+          echo "boot=$BOOT"
+          echo "part=$PART"
+          echo "app=$APP"
+          python3 -m esptool merge-bin \
             -o out/fullflash.bin \
             --flash-mode dio --flash-freq 80m --flash-size 32MB \
-            0x2000  "out/$NAME.ino.bootloader.bin" \
-            0x8000  "out/$NAME.ino.partitions.bin" \
-            0x10000 "out/$NAME.ino.bin"
+            0x2000  "$BOOT" \
+            0x8000  "$PART" \
+            0x10000 "$APP"
           ls -l out/fullflash.bin
-          python -m esptool image-info "out/$NAME.ino.bin" || true
+          python3 -m esptool image-info "$APP" || true
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
@@ -131,9 +140,9 @@ jobs:
           if-no-files-found: error
           retention-days: 14
           path: |
-            out/*.ino.bin
-            out/*.ino.bootloader.bin
-            out/*.ino.partitions.bin
-            out/*.ino.elf
-            out/*.ino.map
             out/fullflash.bin
+            out/build/*.ino.bin
+            out/build/*.ino.bootloader.bin
+            out/build/*.ino.partitions.bin
+            out/build/*.ino.elf
+            out/build/*.ino.map
