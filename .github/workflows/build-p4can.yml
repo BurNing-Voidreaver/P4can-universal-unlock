@@ -60,26 +60,32 @@ jobs:
         id: prep
         run: |
           set -euo pipefail
-          INO=$(find . -maxdepth 3 -name '*.ino' -not -path './.git/*' | head -n1)
-          test -n "$INO" || { echo "找不到 .ino"; exit 1; }
+          INO=$(find . -maxdepth 3 -name '*.ino' -not -path './.git/*' -print -quit)
+          test -n "$INO" || { echo "no .ino found"; exit 1; }
           SRC=$(dirname "$INO")
           NAME=$(basename "$INO" .ino)
-          echo "sketch source: $SRC   name: $NAME"
-          rm -rf work && mkdir -p work/"$NAME"
-          cp -a "$SRC"/. work/"$NAME"/
+          DEST="$RUNNER_TEMP/sketch/$NAME"
+          echo "sketch: $SRC  ->  $DEST"
+          # copy outside the repo: copying into a subdir of itself makes cp/tar recurse
+          rm -rf "$RUNNER_TEMP/sketch"
+          mkdir -p "$DEST"
+          tar --exclude=.git --exclude=.github -cf - -C "$SRC" . | tar -xf - -C "$DEST"
+          ls "$DEST" | head -n 20
           echo "name=$NAME" >> "$GITHUB_OUTPUT"
+          echo "dir=$DEST" >> "$GITHUB_OUTPUT"
 
       - name: Regenerate dashboard header (optional)
         if: ${{ inputs.embed_dashboard }}
         run: |
-          cd work/${{ steps.prep.outputs.name }}
+          cd "${{ steps.prep.outputs.dir }}"
           python3 tools/embed_dashboard.py
 
       - name: Compile
         run: |
           set -euo pipefail
           NAME='${{ steps.prep.outputs.name }}'
-          TC="$PWD/work/$NAME/third_party/tinycrypt/include"
+          SKETCH='${{ steps.prep.outputs.dir }}'
+          TC="$SKETCH/third_party/tinycrypt/include"
           arduino-cli compile \
             --fqbn "$FQBN" \
             --warnings default \
@@ -87,7 +93,7 @@ jobs:
             --build-property "compiler.cpp.extra_flags=-I$TC" \
             --build-path out/build \
             --output-dir out \
-            "work/$NAME"
+            "$SKETCH"
           ls -l out
 
       - name: Check NimBLE -> fixed TinyCrypt ownership
