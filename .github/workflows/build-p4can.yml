@@ -141,6 +141,16 @@ jobs:
           echo "app      : $APP  $(stat -c %s "$APP") bytes"
           echo "fullflash: out/fullflash.bin  $(stat -c %s out/fullflash.bin) bytes"
 
+      - name: Report hashes
+        run: |
+          for f in out/fullflash.bin out/build/*.bootloader.bin out/build/*.partitions.bin out/build/*.ino.bin out/build/*.ino.elf; do
+            [ -f "$f" ] || continue
+            S=$(stat -c %s "$f")
+            H=$(sha256sum "$f" | cut -d' ' -f1)
+            echo "$(basename "$f")  $S bytes  $H"
+            echo "::notice title=$(basename "$f")::$S bytes sha256=$H"
+          done
+
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
