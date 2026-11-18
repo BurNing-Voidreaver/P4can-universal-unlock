@@ -1,0 +1,133 @@
+name: build-p4can
+
+# 手动点一次即可出包；也可以改成 push 自动构建
+on:
+  workflow_dispatch:
+    inputs:
+      embed_dashboard:
+        description: "先由 dashboard_source.html 重新生成 index_html.h"
+        type: boolean
+        default: false
+  push:
+    branches: [main, master]
+    paths:
+      - "**.ino"
+      - "**.h"
+      - "**.c"
+      - "src/**"
+      - "third_party/**"
+      - "tools/**"
+      - "dashboard_source.html"
+      - ".github/workflows/build-p4can.yml"
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    env:
+      # 与官方 v3.29.3 发布镜像一致的编译配置（镜像头记录的是 DIO）
+      FQBN: esp32:esp32:esp32p4:ChipVariant=postv3,FlashSize=32M,PartitionScheme=app5M_fat24M_32MB,PSRAM=enabled,USBMode=hwcdc,CDCOnBoot=cdc,FlashMode=dio
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install arduino-cli
+        run: |
+          curl -fsSL https://raw.githubusercontent.com/arduino/arduino-cli/master/install.sh \
+            | BINDIR=/usr/local/bin sh
+          arduino-cli version
+
+      - name: Cache Arduino15 (ESP32 core)
+        uses: actions/cache@v4
+        with:
+          path: ~/.arduino15
+          key: arduino15-esp32-3.3.12-${{ runner.os }}
+          restore-keys: |
+            arduino15-esp32-3.3.12-
+
+      - name: Install ESP32 core 3.3.12
+        run: |
+          arduino-cli config init --overwrite
+          arduino-cli config add board_manager.additional_urls \
+            https://espressif.github.io/arduino-esp32/package_esp32_index.json
+          arduino-cli core update-index
+          arduino-cli core install esp32:esp32@3.3.12
+          arduino-cli core list
+
+      - name: Prepare sketch (folder name must equal .ino name)
+        id: prep
+        run: |
+          set -euo pipefail
+          INO=$(find . -maxdepth 3 -name '*.ino' -not -path './.git/*' | head -n1)
+          test -n "$INO" || { echo "找不到 .ino"; exit 1; }
+          SRC=$(dirname "$INO")
+          NAME=$(basename "$INO" .ino)
+          echo "sketch source: $SRC   name: $NAME"
+          rm -rf work && mkdir -p work/"$NAME"
+          cp -a "$SRC"/. work/"$NAME"/
+          echo "name=$NAME" >> "$GITHUB_OUTPUT"
+
+      - name: Regenerate dashboard header (optional)
+        if: ${{ inputs.embed_dashboard }}
+        run: |
+          cd work/${{ steps.prep.outputs.name }}
+          python3 tools/embed_dashboard.py
+
+      - name: Compile
+        run: |
+          set -euo pipefail
+          NAME='${{ steps.prep.outputs.name }}'
+          TC="$PWD/work/$NAME/third_party/tinycrypt/include"
+          arduino-cli compile \
+            --fqbn "$FQBN" \
+            --warnings default \
+            --build-property "compiler.c.extra_flags=-I$TC" \
+            --build-property "compiler.cpp.extra_flags=-I$TC" \
+            --build-path out/build \
+            --output-dir out \
+            "work/$NAME"
+          ls -l out
+
+      - name: Check NimBLE -> fixed TinyCrypt ownership
+        continue-on-error: true
+        run: |
+          MAP=$(ls out/build/*.ino.map)
+          echo "map: $MAP"
+          grep -E 'uECC_shared_secret|EccPoint_mult|uECC_make_key|uECC_valid_public_key' "$MAP" | head -20
+          if grep -E 'uECC_shared_secret' "$MAP" | grep -q 'src/p4_tinycrypt/'; then
+            echo "OK: 使用包内修复版 TinyCrypt"
+          else
+            echo "WARN: uECC_shared_secret 没有来自 src/p4_tinycrypt，可能仍在使用 SDK 旧实现"
+          fi
+
+      - name: Merge 32MB fullflash image
+        run: |
+          set -euo pipefail
+          python3 -m venv .venv
+          . .venv/bin/activate
+          pip install --quiet "esptool==5.6.0"
+          NAME='${{ steps.prep.outputs.name }}'
+          python -m esptool merge-bin \
+            -o out/fullflash.bin \
+            --flash-mode dio --flash-freq 80m --flash-size 32MB \
+            0x2000  "out/$NAME.ino.bootloader.bin" \
+            0x8000  "out/$NAME.ino.partitions.bin" \
+            0x10000 "out/$NAME.ino.bin"
+          ls -l out/fullflash.bin
+          python -m esptool image-info "out/$NAME.ino.bin" || true
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: p4can-firmware
+          if-no-files-found: error
+          retention-days: 14
+          path: |
+            out/*.ino.bin
+            out/*.ino.bootloader.bin
+            out/*.ino.partitions.bin
+            out/*.ino.elf
+            out/*.ino.map
+            out/fullflash.bin
